@@ -184,4 +184,3 @@ auth.onAuthStateChanged(user => {
         document.querySelectorAll('.schedule-item').forEach(li => li.classList.remove('editable'));
     }
 });
-</script>
