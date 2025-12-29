@@ -1,1 +1,187 @@
+import{firebaseConfig} from './firebase-config.js';
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+const plansCollection = db.collection("trip_plans");
+const auth = firebase.auth();
 
+let currentlySelectedDate = "2026-03-12"; 
+
+const authButton = document.getElementById('auth-button');
+const googleLoginButton = document.getElementById('google-login-button');
+const userEmailDisplay = document.getElementById('user-email-display');
+const scheduleContainer = document.getElementById('schedule-container');
+const inputSection = document.getElementById('input-section');
+const googleProvider = new firebase.auth.GoogleAuthProvider(); 
+
+function switchScheduleDisplay(targetDate) {
+    document.querySelectorAll('.schedule-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    const targetContent = document.querySelector(`.schedule-content[data-date="${targetDate}"]`);
+    if (targetContent) {
+        targetContent.classList.add('active');
+    }
+}
+
+authButton.addEventListener('click', () => {
+    if (auth.currentUser) {
+        auth.signOut();
+    } else {
+        googleLoginButton.style.display = 'inline-block';
+        authButton.style.display = 'none';
+    }
+});
+
+googleLoginButton.addEventListener('click', () => {
+    auth.signInWithPopup(googleProvider) 
+        .then((result) => {
+            console.log("Google 登入成功:", result.user.email);
+        })
+        .catch((error) => {
+            console.error("Google 登入失敗: ", error.message);
+            alert("登入失敗，可能您不在允許編輯名單中，錯誤訊息: " + error.code);
+        });
+});
+
+document.querySelectorAll('.date-item').forEach(dateItem => {
+    dateItem.addEventListener('click', (e) => {
+        const currentSelected = document.querySelector('.date-item.selected');
+        if (currentSelected) {
+            currentSelected.classList.remove('selected');
+        }
+        e.currentTarget.classList.add('selected');
+        currentlySelectedDate = e.currentTarget.getAttribute('data-date');
+        switchScheduleDisplay(currentlySelectedDate);
+    });
+});
+
+document.getElementById("add-button").addEventListener('click', () => {
+    if (!auth.currentUser) {
+        alert("您沒有編輯權限，請先使用允許的 Google 帳號登入！");
+        return;
+    }
+    const input = document.getElementById("new-item-input");
+    const timeInput = document.getElementById("time-input");
+    const imageUrlInput = document.getElementById("image-url-input"); 
+    const itemName = input.value.trim();
+    const selectedTime = timeInput.value;
+    const selectedDate = currentlySelectedDate;
+    const imageUrl = imageUrlInput.value.trim(); 
+    if (itemName && selectedDate && selectedTime) {
+        plansCollection.add({
+            name: itemName,
+            date: selectedDate,
+            time: selectedTime,
+            imageUrl: imageUrl, 
+            userId: auth.currentUser.uid,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        })
+        .then(() => {
+            input.value = ''; 
+            imageUrlInput.value = ''; 
+        })
+        .catch((error) => {
+            console.error("寫入錯誤: ", error);
+            alert("新增失敗：您可能不在允許編輯名單中。");
+        });
+    } else {
+        alert("請填寫行程名稱、日期和時間。");
+    }
+});
+
+function handleScheduleSnapshot(snapshot) {
+    const isEditable = !!auth.currentUser;
+    scheduleContainer.innerHTML = ''; 
+    const groupedPlans = {};
+    snapshot.forEach((doc) => {
+        const plan = doc.data();
+        const date = plan.date; 
+        if (!groupedPlans[date]) {
+            groupedPlans[date] = [];
+        }
+        groupedPlans[date].push({ id: doc.id, imageUrl: plan.imageUrl || '', ...plan });
+    });
+    for (const date in groupedPlans) {
+        const dateContentWrapper = document.createElement("div");
+        dateContentWrapper.classList.add('schedule-content'); 
+        dateContentWrapper.setAttribute('data-date', date);
+        if (date === currentlySelectedDate) {
+            dateContentWrapper.classList.add('active');
+        }
+        const dateCard = document.createElement("div");
+        const displayDate = new Date(date).toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' });
+        dateCard.innerHTML = `
+            <h3 style="color: #4CAF50;">📅 ${displayDate} 的行程</h3>
+            <ul id="list-${date}"></ul>
+        `;
+        dateContentWrapper.appendChild(dateCard);
+        scheduleContainer.appendChild(dateContentWrapper);
+        const listElement = dateContentWrapper.querySelector('ul');
+        groupedPlans[date].forEach(item => {
+            const li = document.createElement("li");
+            li.classList.add('schedule-item'); 
+            if (isEditable) {
+                li.classList.add('editable');
+            }
+            const isValidUrl = item.imageUrl && item.imageUrl.startsWith('http');
+            const finalImageUrl = isValidUrl
+                ? item.imageUrl 
+                : 'https://via.placeholder.com/300x150?text=' + encodeURIComponent(item.name || '無圖片');
+            li.innerHTML = `
+                <div class="item-header">
+                    <span class="item-time">${item.time}</span>
+                    <span class="item-name">${item.name}</span>
+                    <span class="delete-btn" data-id="${item.id}">🗑️</span>
+                </div>
+                <div class="item-details" data-id="${item.id}">
+                    <div class="item-images">
+                        <img src="${finalImageUrl}" alt="${item.name}圖片">
+                    </div>
+                </div>
+            `;
+            listElement.appendChild(li);
+        });
+    }
+    document.querySelectorAll('.delete-btn').forEach(button => {
+        button.addEventListener('click', (e) => {
+            e.stopPropagation(); 
+            if (!isEditable) {
+                alert("您沒有刪除權限！");
+                return;
+            }
+            const idToDelete = e.target.getAttribute('data-id');
+            plansCollection.doc(idToDelete).delete()
+                .catch((error) => {
+                    alert("刪除失敗：您可能不在允許編輯名單中。");
+                });
+        });
+    });
+    document.querySelectorAll('.schedule-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+            const currentItem = e.currentTarget;
+            currentItem.classList.toggle('open'); 
+        });
+    });
+    switchScheduleDisplay(currentlySelectedDate);
+}
+
+plansCollection.orderBy("date").orderBy("time").onSnapshot(handleScheduleSnapshot);
+
+auth.onAuthStateChanged(user => {
+    if (user) {
+        userEmailDisplay.textContent = `編輯者: ${user.email}`;
+        authButton.textContent = '登出';
+        authButton.style.display = 'inline-block';
+        googleLoginButton.style.display = 'none';
+        inputSection.style.display = 'block'; 
+        document.querySelectorAll('.schedule-item').forEach(li => li.classList.add('editable'));
+    } else {
+        userEmailDisplay.textContent = '訪客模式';
+        authButton.textContent = '登入';
+        authButton.style.display = 'inline-block';
+        googleLoginButton.style.display = 'none'; 
+        inputSection.style.display = 'none'; 
+        document.querySelectorAll('.schedule-item').forEach(li => li.classList.remove('editable'));
+    }
+});
+</script>
